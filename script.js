@@ -513,7 +513,7 @@ function quizV() {
     <div class="mu">${type === "multi" ? "Select all that apply." : type === "id" ? "Type your answer." : "Select one answer."}</div>
     ${body}${fb}
     <div class="quiz-actions">
-      <div class="quiz-actions-primary"><button class="pri" data-act="submit" ${it.done || !can ? "disabled" : ""}>Submit Answer</button><button data-act="next" ${it.done ? "" : "disabled"}>${run.i === N - 1 ? "Finish" : "Next Question"}</button></div>
+      <div class="quiz-actions-primary">${it.done ? `<button class="pri" data-act="next">${run.i === N - 1 ? "Finish" : "Next Question"}</button>` : `<button class="pri" data-act="submit" ${!can ? "disabled" : ""}>Submit Answer</button>`}</div>
       <button class="quiz-quit" data-act="quit">Quit</button>
     </div>
   </div>`;
