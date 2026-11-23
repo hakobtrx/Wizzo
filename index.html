@@ -1,0 +1,44 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quiz Maker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <div id="app"></div>
+</div>
+<dialog class="sync-dialog" id="sync-dialog" aria-labelledby="sync-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close sync dialog">&times;</button></form>
+  <span class="eyebrow">CLOUD BACKUP</span>
+  <h2 id="sync-title">Sync your quizzes</h2>
+  <p class="mu">Sign in with the same email on your PC and phone to keep your quiz library in sync.</p>
+  <div id="sync-setup-note" class="sync-setup-note" hidden>Cloud sync needs a Supabase project URL and public anon key. Follow the setup guide in <b>SUPABASE_SETUP.md</b>, then add those values to <b>sync-config.js</b>.</div>
+  <form id="sync-login-form" class="sync-form">
+    <label for="sync-email">Email address</label>
+    <input id="sync-email" type="email" autocomplete="email" required placeholder="you@example.com">
+    <button class="pri" type="submit">Send sign-in link</button>
+  </form>
+  <div id="sync-account" hidden>
+    <p>Signed in as <b id="sync-user-email"></b></p>
+    <p class="sync-status" id="sync-status">Ready to sync.</p>
+    <div class="sync-actions"><button class="pri" id="sync-now" type="button">Sync now</button><button id="sync-sign-out" type="button">Sign out</button></div>
+  </div>
+  <div id="sync-feedback" class="sync-feedback" role="status" aria-live="polite"></div>
+  <a class="sync-guide-link" href="SUPABASE_SETUP.md" target="_blank" rel="noopener">Setup instructions</a>
+</dialog>
+<dialog class="exit-dialog" id="builder-exit-dialog" aria-labelledby="builder-exit-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close confirmation">&times;</button></form>
+  <span class="eyebrow">UNSAVED CHANGES</span>
+  <h2 id="builder-exit-title">Save your work before leaving?</h2>
+  <p class="mu">You have changes in this quiz builder. Save them before quitting, discard them, or stay here.</p>
+  <div class="exit-dialog-actions"><button class="pri" id="builder-save-quit" type="button">Save and quit</button><button class="dng" id="builder-discard-quit" type="button">Discard changes</button><button id="builder-stay" type="button">Stay in builder</button></div>
+</dialog>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="sync-config.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
+
