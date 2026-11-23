@@ -524,18 +524,18 @@ function resultV() {
   const as = p >= 90 ? "Excellent! Outstanding mastery." : p >= 75 ? "Good job! Solid understanding." : p >= 60 ? "Fair. A bit more practice will help." : "Needs improvement. Review the explanations and try again.";
   const items = run.items.map((it, i) => ({ it, i })).filter(x => !flt || !x.it.ok);
   const rv = items.map(({ it, i }) => `
-    <div class="item">
-      <div style="flex:1">
-        <div class="mu">Question ${i + 1} · ${TYPES[it.q.type]}</div>
-        <div><b>${esc(it.q.text)}</b></div>
-        <div>Your answer: <span class="tag ${it.ok ? "good" : "bad"}">${esc(yours(it))}</span></div>
-        ${it.ok ? "" : `<div>Correct answer: <b>${esc(right(it.q))}</b></div>`}
-        <div class="mu">${esc(it.q.explanation || "No explanation provided.")}</div>
+    <div class="item result-item">
+      <div class="result-item-content">
+        <div class="mu result-question-type">Question ${i + 1} · ${TYPES[it.q.type]}</div>
+        <div class="result-question-text"><b>${esc(it.q.text)}</b></div>
+        <div class="result-answer"><span>Your answer</span><span class="tag ${it.ok ? "good" : "bad"}">${esc(yours(it))}</span></div>
+        ${it.ok ? "" : `<div class="result-answer"><span>Correct answer</span><b>${esc(right(it.q))}</b></div>`}
+        <div class="mu result-explanation">${esc(it.q.explanation || "No explanation provided.")}</div>
       </div>
       <span class="tag ${it.ok ? "good" : "bad"}">${it.ok ? "Correct" : "Incorrect"}</span>
     </div>`).join("");
   return `
-  <div class="card">
+  <div class="card result-summary">
     <h1>${run.expired ? "Time is up" : "Quiz complete"}</h1><div class="mu">${esc(getQ()?.title || "")}</div>
     <div class="stats">
       <div class="stat"><b>${N}</b>Total questions</div>
@@ -552,7 +552,7 @@ function resultV() {
       <button data-act="home">Back to quizzes</button>
     </div>
   </div>
-  <div class="card"><h2>Answer review${flt ? " (mistakes only)" : ""}</h2>${rv || '<div class="mu">No mistakes to review. Perfect!</div>'}</div>`;
+  <div class="card result-review"><h2>Answer review${flt ? " (mistakes only)" : ""}</h2><div class="result-review-list">${rv || '<div class="mu result-perfect">No mistakes to review. Perfect!</div>'}</div></div>`;
 }
 
 function editV() {
