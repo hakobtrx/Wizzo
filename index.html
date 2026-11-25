@@ -1,10 +1,13 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Quiz Maker</title>
-<link rel="stylesheet" href="style.css?v=2">
+<title>Wizzo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 <div class="wrap">
@@ -14,7 +17,7 @@
   <form method="dialog" class="sync-dialog-close"><button aria-label="Close sync dialog">&times;</button></form>
   <span class="eyebrow">CLOUD BACKUP</span>
   <h2 id="sync-title">Sync your quizzes</h2>
-  <p class="mu">Sign in with the same email on your PC and phone to keep your quiz library in sync.</p>
+  <p class="mu">Sign in with the same email on your PC and phone to keep your library in sync.</p>
   <div id="sync-setup-note" class="sync-setup-note" hidden>Cloud sync needs a Supabase project URL and public anon key. Follow the setup guide in <b>SUPABASE_SETUP.md</b>, then add those values to <b>sync-config.js</b>.</div>
   <form id="sync-login-form" class="sync-form">
     <label for="sync-email">Email address</label>
@@ -29,6 +32,38 @@
   <div id="sync-feedback" class="sync-feedback" role="status" aria-live="polite"></div>
   <a class="sync-guide-link" href="SUPABASE_SETUP.md" target="_blank" rel="noopener">Setup instructions</a>
 </dialog>
+<dialog class="sync-dialog folder-name-dialog" id="folder-name-dialog" aria-labelledby="folder-name-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close folder form">&times;</button></form>
+  <span class="eyebrow">LIBRARY</span>
+  <h2 id="folder-name-title">Create folder</h2>
+  <form id="folder-name-form" class="sync-form" novalidate>
+    <label for="folder-name-input">Folder name</label>
+    <input id="folder-name-input" type="text" maxlength="80" autocomplete="off" placeholder="e.g. Biology" required>
+    <div id="folder-name-error" class="sync-feedback is-error" role="alert" aria-live="polite"></div>
+    <div class="sync-actions"><button class="pri" type="submit">Save folder</button><button id="folder-name-cancel" type="button">Cancel</button></div>
+  </form>
+</dialog>
+<dialog class="sync-dialog folder-delete-dialog" id="folder-delete-dialog" aria-labelledby="folder-delete-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close delete confirmation">&times;</button></form>
+  <span class="eyebrow">FOLDER MANAGEMENT</span>
+  <h2 id="folder-delete-title">Delete folder?</h2>
+  <p class="mu" id="folder-delete-message">This will permanently delete the folder and all quizzes inside it. This action can’t be undone.</p>
+  <div class="sync-actions"><button class="folder-delete-confirm" id="folder-delete-confirm" type="button">Delete folder</button><button id="folder-delete-cancel" type="button">Cancel</button></div>
+</dialog>
+<dialog class="sync-dialog folder-delete-dialog" id="quiz-delete-dialog" aria-labelledby="quiz-delete-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close delete confirmation">&times;</button></form>
+  <span class="eyebrow">LIBRARY</span>
+  <h2 id="quiz-delete-title">Delete quiz?</h2>
+  <p class="mu" id="quiz-delete-message">This will permanently delete this quiz and all of its questions. This action can’t be undone.</p>
+  <div class="sync-actions"><button class="folder-delete-confirm" id="quiz-delete-confirm" type="button">Delete quiz</button><button id="quiz-delete-cancel" type="button">Cancel</button></div>
+</dialog>
+<dialog class="sync-dialog activity-clear-dialog" id="activity-clear-dialog" aria-labelledby="activity-clear-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close confirmation">&times;</button></form>
+  <span class="eyebrow">RECENT ACTIVITY</span>
+  <h2 id="activity-clear-title">Clear recent activity?</h2>
+  <p class="mu">This will remove your recent activity history. Your quizzes will stay in the library.</p>
+  <div class="sync-actions"><button class="activity-clear-confirm" id="activity-clear-confirm" type="button">Clear activity</button><button id="activity-clear-cancel" type="button">Cancel</button></div>
+</dialog>
 <dialog class="exit-dialog" id="builder-exit-dialog" aria-labelledby="builder-exit-title">
   <form method="dialog" class="sync-dialog-close"><button aria-label="Close confirmation">&times;</button></form>
   <span class="eyebrow">UNSAVED CHANGES</span>
@@ -38,7 +73,7 @@
 </dialog>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="sync-config.js"></script>
-<script src="script.js?v=7"></script>
+<script src="script.js?v=20"></script>
 </body>
 </html>
 
