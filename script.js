@@ -23,9 +23,9 @@ const icon = (name, size = 16) => {
     chevron: '<path d="m6 9 6 6 6-6"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
     book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22z"/><path d="M4 5.5V22m4-15h8"/>',
-    folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 10h18"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
     star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
+    tag: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 2.8 12V5a2 2 0 0 1 2-2h7a2 2 0 0 1 1.4.6l7.4 7a2 2 0 0 1 0 2.8Z"/><circle cx="7.5" cy="7.5" r="1"/>',
     text: '<path d="M4 6V4h16v2M12 4v16m-4 0h8"/>'
   };
   return `<svg class="ui-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] || paths.spark}</svg>`;
@@ -33,9 +33,8 @@ const icon = (name, size = 16) => {
 let activeStorageKey = KEY;
 let hasLocalStore = (() => { try { return Boolean(localStorage.getItem(KEY)); } catch (e) { return false; } })();
 let libraryView = (() => { try { return localStorage.getItem("quizmaker.libraryView") === "list" ? "list" : "grid"; } catch (e) { return "grid"; } })();
-let activeFolderId = null;
-let showAllQuizzes = true;
 let showFavorites = false;
+let activeTagId = null;
 let librarySearch = "";
 
 /* ---------- Sample data ---------- */
@@ -56,13 +55,14 @@ const sample = () => ({
 /* ---------- Storage ---------- */
 function load() {
   try { const d = JSON.parse(localStorage.getItem(activeStorageKey)); if (d && Array.isArray(d.quizzes)) return d; } catch (e) {}
-  return { quizzes: [sample()], folders: [] };
+  return { quizzes: [sample()] };
 }
-function ensureFolders() {
-  store.folders = Array.isArray(store.folders) ? store.folders : [];
-  store.folders.forEach(folder => { if (!folder.id) folder.id = uid(); });
-  const ids = new Set(store.folders.map(folder => folder.id));
-  store.quizzes.forEach(quiz => { if (!ids.has(quiz.folderId)) quiz.folderId = null; if (typeof quiz.favorite !== "boolean") quiz.favorite = false; });
+function normalizeQuizzes() {
+  store.tags = Array.isArray(store.tags) ? store.tags : [];
+  const validTagIds = new Set(store.tags.map(tag => tag.id));
+  store.tags.forEach(tag => { if (!/^#[0-9a-f]{6}$/i.test(tag.color || "")) tag.color = "#aa9bff"; });
+  store.quizzes.forEach(quiz => { if (typeof quiz.favorite !== "boolean") quiz.favorite = false; });
+  store.quizzes.forEach(quiz => { quiz.tagIds = [...new Set((Array.isArray(quiz.tagIds) ? quiz.tagIds : []).filter(id => validTagIds.has(id)))]; });
 }
 let cloudClient = null, cloudUser = null, cloudChannel = null, cloudTimer = null;
 let quizClockInterval = null;
@@ -78,7 +78,7 @@ function activateLocalStore(userId) {
     hasLocalStore = false;
     store = { quizzes: [sample()], activity: [], updatedAt: 0 };
   }
-  ensureFolders();
+  normalizeQuizzes();
 }
 function readSavedStore(key) {
   try {
@@ -126,14 +126,14 @@ function mergeStores(local, remote) {
   const older = localIsNewer ? remote : local;
   const deletedQuizzes = new Set([...(local.deletedQuizIds || []), ...(remote.deletedQuizIds || [])]);
   const deletedQuestions = new Set([...(local.deletedQuestionIds || []), ...(remote.deletedQuestionIds || [])]);
-  const deletedFolders = new Set([...(local.deletedFolderIds || []), ...(remote.deletedFolderIds || [])]);
+  const deletedTags = new Set([...(local.deletedTagIds || []), ...(remote.deletedTagIds || [])]);
   const activityClearedAt = Math.max(local.activityClearedAt || 0, remote.activityClearedAt || 0);
   const byId = new Map((newer.quizzes || []).map(q => [q.id, { ...q, questions: [...(q.questions || [])] }]));
   for (const q of (older.quizzes || [])) {
     if (!byId.has(q.id)) byId.set(q.id, { ...q, questions: [...(q.questions || [])] });
     else {
       const current = byId.get(q.id);
-      mergeFields(current, q, ["title", "description", "shuffle", "count", "timeLimit", "folderId", "favorite"]);
+      mergeFields(current, q, ["title", "description", "shuffle", "count", "timeLimit", "favorite", "tagIds"]);
       const questions = new Map((current.questions || []).map(x => [x.id, x]));
       for (const question of (q.questions || [])) {
         if (!questions.has(question.id)) { current.questions.push(question); questions.set(question.id, question); }
@@ -142,16 +142,17 @@ function mergeStores(local, remote) {
     }
   }
   const quizzes = [...byId.values()].filter(q => !deletedQuizzes.has(q.id)).map(q => ({ ...q, questions: (q.questions || []).filter(question => !deletedQuestions.has(question.id)) }));
-  const folderMap = new Map((newer.folders || []).map(folder => [folder.id, { ...folder }]));
-  for (const folder of older.folders || []) {
-    const current = folderMap.get(folder.id);
-    if (!current || (folder.updatedAt || 0) > (current.updatedAt || 0)) folderMap.set(folder.id, { ...folder });
+  const tagMap = new Map((newer.tags || []).map(tag => [tag.id, { ...tag }]));
+  for (const tag of older.tags || []) {
+    const current = tagMap.get(tag.id);
+    if (!current || (tag.updatedAt || 0) > (current.updatedAt || 0)) tagMap.set(tag.id, { ...tag });
   }
-  for (const folderId of deletedFolders) folderMap.delete(folderId);
-  for (const quiz of quizzes) if (deletedFolders.has(quiz.folderId)) quiz.folderId = null;
+  for (const id of deletedTags) tagMap.delete(id);
+  for (const quiz of quizzes) quiz.tagIds = [...new Set((quiz.tagIds || []).filter(id => tagMap.has(id)))];
   const activity = new Map();
   for (const a of [...(newer.activity || []), ...(older.activity || [])]) if (Date.parse(a.at) > activityClearedAt) activity.set(`${a.at}:${a.title}`, a);
-  return { ...newer, quizzes, folders: [...folderMap.values()], deletedFolderIds: [...deletedFolders], deletedQuizIds: [...deletedQuizzes], deletedQuestionIds: [...deletedQuestions], activity: [...activity.values()].sort((a,b) => Date.parse(b.at) - Date.parse(a.at)).slice(0,20), activityClearedAt, updatedAt: Math.max(local.updatedAt || 0, remote.updatedAt || 0) };
+  const merged = { ...newer, quizzes, tags: [...tagMap.values()], deletedTagIds: [...deletedTags], deletedQuizIds: [...deletedQuizzes], deletedQuestionIds: [...deletedQuestions], activity: [...activity.values()].sort((a,b) => Date.parse(b.at) - Date.parse(a.at)).slice(0,20), activityClearedAt, updatedAt: Math.max(local.updatedAt || 0, remote.updatedAt || 0) };
+  return merged;
 }
 function mergeFields(target, other, fields) {
   const targetHasFieldTimes = Boolean(target.fieldTimes), otherHasFieldTimes = Boolean(other.fieldTimes);
@@ -196,7 +197,7 @@ async function syncFromCloud() {
     const merged = mergeStores(local, remote);
     const needsUpload = JSON.stringify(merged) !== JSON.stringify(remote);
     store = merged;
-    ensureFolders();
+    normalizeQuizzes();
     try { localStorage.setItem(activeStorageKey, JSON.stringify(store)); hasLocalStore = true; } catch (e) {}
     if (needsUpload) {
       store.updatedAt = Math.max(Date.now(), (remote.updatedAt || 0) + 1);
@@ -349,7 +350,7 @@ let store = load(),
     msg = "",           // message shown on home/edit
     flt = false,        // results: show mistakes only
     impMsg = null;      // import feedback
-ensureFolders();
+normalizeQuizzes();
 let editorSnapshot = null;
 const getQ = () => store.quizzes.find(q => q.id === qid);
 function editorHasChanges() {
@@ -362,6 +363,20 @@ function editorHasChanges() {
   return JSON.stringify(getQ()) !== JSON.stringify(editorSnapshot);
 }
 let noticeTimer = null;
+let tagEditId = null;
+let tagDeletePendingId = null;
+function openTagDialog(id = null) {
+  const tag = id ? store.tags.find(item => item.id === id) : null;
+  if (id && !tag) return;
+  tagEditId = id;
+  document.getElementById("tag-edit-title").textContent = tag ? "Edit tag" : "Create tag";
+  document.getElementById("tag-name-input").value = tag?.name || "";
+  document.getElementById("tag-color-input").value = tag?.color || "#aa9bff";
+  document.getElementById("tag-name-error").textContent = "";
+  document.getElementById("tag-delete-open").hidden = !tag;
+  document.getElementById("tag-edit-dialog").showModal();
+  requestAnimationFrame(() => document.getElementById("tag-name-input").focus());
+}
 function flashMessage(text) {
   msg = text;
   render();
@@ -371,20 +386,7 @@ function flashMessage(text) {
     if (view === "home" || view === "edit") render();
   }, 2000);
 }
-let folderNameEditId = null;
-let folderDeletePendingId = null;
 let quizDeletePendingId = null;
-function openFolderNameDialog(folderId = null) {
-  folderNameEditId = folderId;
-  const folder = folderId ? store.folders.find(item => item.id === folderId) : null;
-  if (folderId && !folder) return;
-  document.getElementById("folder-name-title").textContent = folder ? "Rename folder" : "Create folder";
-  document.getElementById("folder-name-input").value = folder?.name || "";
-  document.getElementById("folder-name-error").textContent = "";
-  const dialog = document.getElementById("folder-name-dialog");
-  dialog.showModal();
-  requestAnimationFrame(() => document.getElementById("folder-name-input").focus());
-}
 
 /* ---------- Theme ---------- */
 function setTheme(t) { try { localStorage.setItem(TK, t); } catch (e) {} document.documentElement.dataset.theme = t; }
@@ -491,11 +493,13 @@ function parseText(t) {
 /* =========================================================
    Views (each returns an HTML string)
    ========================================================= */
+function tagBadge(tag) {
+  return `<span class="tag-badge" style="--tag-color:${esc(tag.color)}">${esc(tag.name)}</span>`;
+}
 function homeV() {
   const quizzes = store.quizzes;
-  const folders = store.folders || [];
-  const activeFolder = activeFolderId && folders.find(folder => folder.id === activeFolderId);
-  const scopedQuizzes = quizzes.filter(quiz => activeFolder ? quiz.folderId === activeFolder.id : showFavorites ? quiz.favorite : showAllQuizzes ? true : !quiz.folderId);
+  const activeTag = activeTagId && store.tags.find(tag => tag.id === activeTagId);
+  const scopedQuizzes = quizzes.filter(quiz => showFavorites ? quiz.favorite : activeTag ? (quiz.tagIds || []).includes(activeTag.id) : true);
   const searchTerm = librarySearch.trim().toLocaleLowerCase();
   const shownQuizzes = scopedQuizzes.filter(quiz => !searchTerm || `${quiz.title || ""} ${quiz.description || ""}`.toLocaleLowerCase().includes(searchTerm));
   const totalQuestions = quizzes.reduce((sum, q) => sum + q.questions.length, 0);
@@ -505,7 +509,7 @@ function homeV() {
     <article class="library-card">
       <div class="library-card-top"><span class="library-icon">${icon("book", 17)}</span><span class="library-card-meta"><button class="quiz-favorite-button ${q.favorite ? "is-favorite" : ""}" type="button" data-act="toggle-favorite" data-id="${esc(q.id)}" aria-label="${q.favorite ? "Remove from favorites" : "Add to favorites"}: ${esc(q.title || "Untitled quiz")}" aria-pressed="${Boolean(q.favorite)}" title="${q.favorite ? "Remove from favorites" : "Add to favorites"}">${icon("star", 18)}</button><span class="pill">${q.questions.length} question${q.questions.length === 1 ? "" : "s"}</span></span></div>
       <h2 class="library-card-title">${esc(q.title || "Untitled quiz")}</h2><p class="mu library-card-description">${esc(q.description || "No description yet")}</p>
-      <label class="quiz-folder-control">Folder<select data-quiz-folder="${q.id}" aria-label="Folder for ${esc(q.title || "quiz")}"><option value="" ${!q.folderId ? "selected" : ""}>Uncategorized</option>${folders.map(folder => `<option value="${esc(folder.id)}" ${q.folderId === folder.id ? "selected" : ""}>${esc(folder.name)}</option>`).join("")}</select></label>
+      ${(q.tagIds || []).length ? `<div class="quiz-tag-badges">${(q.tagIds || []).slice(0, 3).map(id => store.tags.find(tag => tag.id === id)).filter(Boolean).map(tagBadge).join("")}${q.tagIds.length > 3 ? `<span class="tag-overflow">+${q.tagIds.length - 3}</span>` : ""}</div>` : ""}
       <div class="library-card-actions"><button class="pri" data-act="start" data-id="${q.id}" ${q.questions.length ? "" : "disabled"}>Take quiz</button><button data-act="edit" data-id="${q.id}">Edit quiz</button><button class="icon-button dng" title="Delete quiz" aria-label="Delete ${esc(q.title || "quiz")}" data-act="delquiz" data-id="${q.id}">${icon("trash")}</button></div>
       ${q.questions.length ? "" : '<div class="mu empty-hint">Add a question before taking this quiz.</div>'}
     </article>`).join("");
@@ -520,11 +524,10 @@ function homeV() {
         <article class="overview-card"><span class="overview-label">QUESTION BANK</span><strong>${totalQuestions}</strong><span class="overview-foot">questions ready to practice</span></article>
         <article class="overview-card"><span class="overview-label">AVERAGE SCORE</span><strong>${avg === null ? "—" : `${avg}%`}</strong><span class="overview-foot">${attempts.length ? `across ${attempts.length} attempts` : "Complete a quiz to see progress"}</span></article>
       </section>
-      <div class="dashboard-columns ${activeFolder ? "is-folder-open" : ""}"><section class="library-section"><div class="section-heading"><div><span class="eyebrow">YOUR COLLECTION</span><h2>Library</h2></div><div class="library-heading-actions"><span class="section-count">${quizzes.length} total</span><button class="pri library-create-button" data-act="newquiz">+ Create a quiz</button><button class="pri folder-create-button" data-act="create-folder">${icon("folder", 15)} Create Folder</button><div class="library-view-switch" role="group" aria-label="Library layout"><button type="button" class="${libraryView === "grid" ? "active" : ""}" data-act="library-view" data-layout="grid" aria-label="Grid layout" aria-pressed="${libraryView === "grid"}">${icon("grid", 15)}</button><button type="button" class="${libraryView === "list" ? "active" : ""}" data-act="library-view" data-layout="list" aria-label="List layout" aria-pressed="${libraryView === "list"}">${icon("list", 15)}</button></div></div></div>
+      <div class="dashboard-columns"><section class="library-section"><div class="section-heading"><div><span class="eyebrow">YOUR COLLECTION</span><h2>Library</h2></div><div class="library-heading-actions"><span class="section-count">${quizzes.length} total</span><button class="pri library-create-button" data-act="newquiz">+ Create a quiz</button><div class="library-view-switch" role="group" aria-label="Library layout"><button type="button" class="${libraryView === "grid" ? "active" : ""}" data-act="library-view" data-layout="grid" aria-label="Grid layout" aria-pressed="${libraryView === "grid"}">${icon("grid", 15)}</button><button type="button" class="${libraryView === "list" ? "active" : ""}" data-act="library-view" data-layout="list" aria-label="List layout" aria-pressed="${libraryView === "list"}">${icon("list", 15)}</button></div></div></div>
       <div class="library-search-bar"><label class="library-search-field">${icon("search", 17)}<input id="library-search" type="search" value="${esc(librarySearch)}" placeholder="Search quizzes" aria-label="Search quizzes in this view"></label><span class="library-search-count">${searchTerm ? `${shownQuizzes.length} of ${scopedQuizzes.length} quizzes` : `${scopedQuizzes.length} quizzes`}</span>${searchTerm ? '<button type="button" class="library-search-clear" data-act="clear-search">Clear search</button>' : ""}</div>
-        <div class="folder-toolbar">${activeFolder ? `<button class="folder-back" data-act="folder-back">← All</button><div class="folder-current"><span>${icon("folder", 18)}</span><div><b>${esc(activeFolder.name)}</b><small>${shownQuizzes.length} ${shownQuizzes.length === 1 ? "quiz" : "quizzes"}</small></div></div></div>` : `<div class="library-collections" role="group" aria-label="Quiz collections"><button class="folder-tab ${!showFavorites ? "active" : ""}" data-act="show-uncategorized">${icon("book", 15)} All <span>${quizzes.length}</span></button><button class="folder-tab ${showFavorites ? "active" : ""}" data-act="show-favorites">${icon("star", 15)} Favorites <span>${quizzes.filter(quiz => quiz.favorite).length}</span></button></div>`}</div>
-        ${activeFolderId || showFavorites ? "" : `<div class="folder-grid">${folders.map(folder => { const count = quizzes.filter(q => q.folderId === folder.id).length; return `<article class="folder-card"><button class="folder-open" data-act="open-folder" data-id="${esc(folder.id)}"><span class="folder-card-icon">${icon("folder", 22)}</span><span class="folder-card-copy"><b>${esc(folder.name)}</b><small>${count} ${count === 1 ? "quiz" : "quizzes"}</small></span></button><div class="folder-card-actions"><button data-act="rename-folder" data-id="${esc(folder.id)}" aria-label="Rename ${esc(folder.name)}">${icon("edit", 14)}</button><button data-act="delete-folder" data-id="${esc(folder.id)}" aria-label="Delete ${esc(folder.name)}">${icon("trash", 14)}</button></div></article>`; }).join("") || '<p class="folder-no-folders">Create a folder to start organizing your quizzes.</p>'}</div>`}
-        ${shownQuizzes.length ? `<div class="library-grid ${libraryView === "list" ? "is-list" : "is-grid"}">${list}</div>` : searchTerm ? `<div class="empty-state folder-empty"><span class="empty-state-icon">${icon("search", 18)}</span><h3>No quizzes found</h3><p>Try another title or description.</p><button data-act="clear-search">Clear search</button></div>` : showFavorites && !activeFolder ? `<div class="empty-state folder-empty"><span class="empty-state-icon">${icon("star", 18)}</span><h3>No favorites yet</h3><p>Tap the star on a quiz to add it to your favorites.</p><button data-act="show-uncategorized">Browse all quizzes</button></div>` : `<div class="empty-state folder-empty"><span class="empty-state-icon">${icon(activeFolder ? "folder" : "book", 18)}</span><h3>${activeFolder ? "This folder is empty" : activeFolderId ? "Folder not found" : "No quizzes yet"}</h3><p>${activeFolder ? "Move quizzes here using the folder menu on each quiz." : "Create a quiz to get started."}</p><button class="pri" data-act="newquiz">Create a quiz</button></div>`}
+      <div class="library-filter-row"><div class="library-collections" role="group" aria-label="Quiz collections"><button class="collection-tab ${!showFavorites && !activeTag ? "active" : ""}" data-act="show-all">${icon("book", 15)} All <span>${quizzes.length}</span></button><button class="collection-tab ${showFavorites ? "active" : ""}" data-act="show-favorites">${icon("star", 15)} Favorites <span>${quizzes.filter(quiz => quiz.favorite).length}</span></button>${store.tags.map(tag => { const count = quizzes.filter(quiz => (quiz.tagIds || []).includes(tag.id)).length; return `<span class="tag-filter-item"><button class="collection-tab tag-filter ${activeTagId === tag.id ? "active" : ""}" data-act="filter-tag" data-id="${esc(tag.id)}" style="--tag-color:${esc(tag.color)}" aria-pressed="${activeTagId === tag.id}">${esc(tag.name)} <span>${count}</span></button><button class="tag-edit-button" data-act="edit-tag" data-id="${esc(tag.id)}" aria-label="Edit ${esc(tag.name)}" title="Edit tag">${icon("edit", 13)}</button></span>`; }).join("")}</div><button type="button" class="create-tag-button" data-act="create-tag">+ Create Tag</button></div>
+        ${shownQuizzes.length ? `<div class="library-grid ${libraryView === "list" ? "is-list" : "is-grid"}">${list}</div>` : searchTerm ? `<div class="empty-state"><span class="empty-state-icon">${icon("search", 18)}</span><h3>No quizzes found</h3><p>Try another title or description.</p><button data-act="clear-search">Clear search</button></div>` : showFavorites ? `<div class="empty-state"><span class="empty-state-icon">${icon("star", 18)}</span><h3>No favorites yet</h3><p>Tap the star on a quiz to add it to your favorites.</p><button data-act="show-all">Browse all quizzes</button></div>` : activeTag ? `<div class="empty-state"><span class="empty-state-icon">${icon("tag", 18)}</span><h3>No quizzes with this tag</h3><p>Assign this tag to a quiz from its editor.</p><button data-act="show-all">Browse all quizzes</button></div>` : `<div class="empty-state"><span class="empty-state-icon">${icon("book", 18)}</span><h3>No quizzes yet</h3><p>Create a quiz to get started.</p><button class="pri" data-act="newquiz">Create a quiz</button></div>`}
       </section><aside class="activity-section"><div class="section-heading"><div><span class="eyebrow">KEEP YOUR MOMENTUM</span><h2>Recent activity</h2></div><button class="activity-clear" type="button" data-act="clear-activity" ${attempts.length ? "" : "disabled"}>Clear</button></div>${recent || '<div class="activity-empty">Your completed quizzes and scores will appear here.</div>'}<div class="activity-tip"><b>Study tip</b><p>Short, regular practice sessions help you remember more. Try a quiz today.</p></div></aside></div>
     </main>`;
 }
@@ -624,7 +627,7 @@ function editV() {
     </aside>
     <main class="builder-main">
       <label class="builder-description-label" for="qd">Description</label><textarea class="builder-description" id="qd" data-qf="description" placeholder="Add a short description">${esc(q.description)}</textarea>
-      <label class="builder-folder-label" for="quiz-folder">Save in folder</label><select id="quiz-folder" data-quiz-folder="${esc(q.id)}"><option value="" ${!q.folderId ? "selected" : ""}>Uncategorized</option>${(store.folders || []).map(folder => `<option value="${esc(folder.id)}" ${q.folderId === folder.id ? "selected" : ""}>${esc(folder.name)}</option>`).join("")}</select>
+      <section class="quiz-tag-editor" aria-label="Quiz tags"><div class="quiz-tag-editor-heading"><b>Tags</b><button type="button" class="tag-manage-create" data-act="create-tag">+ Create Tag</button></div>${store.tags.length ? `<div class="quiz-tag-picker">${store.tags.map(tag => `<button type="button" class="tag-choice ${(q.tagIds || []).includes(tag.id) ? "selected" : ""}" data-act="toggle-quiz-tag" data-id="${esc(tag.id)}" style="--tag-color:${esc(tag.color)}" aria-pressed="${(q.tagIds || []).includes(tag.id)}">${esc(tag.name)}</button>`).join("")}</div>` : '<p class="tag-picker-empty">No tags yet. Create one to organize this quiz.</p>'}</section>
       <section class="builder-stage start-stage"><h2>Title</h2><div class="builder-start-card"><span class="builder-row-grip">${icon("book", 16)}</span><input class="builder-title builder-start-title" aria-label="Quiz title" id="qt" data-qf="title" value="${esc(q.title)}" placeholder="Untitled Quiz"></div></section>
       <section class="builder-stage content-stage"><div class="builder-stage-heading"><h2>Content Elements</h2><div class="builder-settings-inline"><div class="builder-setting-control"><label for="qc">Questions per attempt</label><input type="number" id="qc" min="1" max="${Math.max(1, q.questions.length)}" data-qf="count" value="${esc(q.count)}" placeholder="All"></div><div class="builder-setting-control"><label for="qtime">Timer</label><select id="qtime" data-qf="timeLimit"><option value="0" ${Number(q.timeLimit) ? "" : "selected"}>No timer</option>${[5,10,15,20,30,45,60,90,120].map(m => `<option value="${m}" ${Number(q.timeLimit) === m ? "selected" : ""}>${m} minutes</option>`).join("")}</select></div></div></div>
         <label class="builder-shuffle"><input type="checkbox" data-qf="shuffle" ${q.shuffle ? "checked" : ""}> Randomize questions and answer choices</label>
@@ -744,31 +747,24 @@ document.getElementById("builder-stay").addEventListener("click", () => document
 const A = {
   sync() { openSyncDialog(); },
   "clear-search"() { librarySearch = ""; render(); document.getElementById("library-search")?.focus(); },
-  "show-favorites"() { activeFolderId = null; showAllQuizzes = false; showFavorites = true; render(); },
+  "show-all"() { showFavorites = false; activeTagId = null; render(); },
+  "show-favorites"() { showFavorites = true; activeTagId = null; render(); },
+  "filter-tag"(id) { activeTagId = id; showFavorites = false; render(); },
+  "create-tag"() { openTagDialog(); },
+  "edit-tag"(id) { openTagDialog(id); },
+  "toggle-quiz-tag"(id) {
+    const quiz = getQ(), tag = store.tags.find(item => item.id === id); if (!quiz || !tag) return;
+    const assigned = new Set(quiz.tagIds || []);
+    assigned.has(id) ? assigned.delete(id) : assigned.add(id);
+    quiz.tagIds = [...assigned]; quiz.updatedAt = Date.now(); quiz.fieldTimes = { ...(quiz.fieldTimes || {}), tagIds: quiz.updatedAt }; save(); render();
+  },
   "toggle-favorite"(id) {
     const quiz = store.quizzes.find(item => item.id === id); if (!quiz) return;
     quiz.favorite = !quiz.favorite; quiz.updatedAt = Date.now(); quiz.fieldTimes = { ...(quiz.fieldTimes || {}), favorite: quiz.updatedAt }; save(); render();
   },
   "clear-activity"() { if ((store.activity || []).length) document.getElementById("activity-clear-dialog").showModal(); },
   "library-view"(el) { libraryView = el.dataset.layout === "list" ? "list" : "grid"; try { localStorage.setItem("quizmaker.libraryView", libraryView); } catch (e) {} render(); },
-  "create-folder"() { openFolderNameDialog(); },
-  "open-folder"(id) { activeFolderId = id; showAllQuizzes = false; showFavorites = false; render(); },
-  "folder-back"() { activeFolderId = null; showAllQuizzes = true; showFavorites = false; render(); },
-  "show-uncategorized"() { activeFolderId = null; showAllQuizzes = true; showFavorites = false; render(); },
-  "rename-folder"(id) {
-    openFolderNameDialog(id);
-  },
-  "delete-folder"(id) {
-    const folder = store.folders.find(item => item.id === id); if (!folder) return;
-    const quizCount = store.quizzes.filter(quiz => quiz.folderId === id).length;
-    folderDeletePendingId = id;
-    document.getElementById("folder-delete-title").textContent = `Delete “${folder.name}”?`;
-    document.getElementById("folder-delete-message").textContent = quizCount
-      ? `This will permanently delete this folder and its ${quizCount} ${quizCount === 1 ? "quiz" : "quizzes"}. This action can’t be undone.`
-      : "This will permanently delete this empty folder. This action can’t be undone.";
-    document.getElementById("folder-delete-dialog").showModal();
-  },
-  newquiz() { if (!activeFolderId) { showAllQuizzes = true; showFavorites = false; } const q = { id: uid(), title: "", description: "", shuffle: true, count: "", timeLimit: 0, folderId: activeFolderId || null, favorite: false, fieldTimes: { folderId: Date.now(), favorite: Date.now() }, questions: [] }; store.quizzes.push(q); save(); qid = q.id; editorSnapshot = null; draft = null; impMsg = null; msg = ""; view = "edit"; render(); },
+  newquiz() { showFavorites = false; activeTagId = null; const q = { id: uid(), title: "", description: "", shuffle: true, count: "", timeLimit: 0, favorite: false, tagIds: [], fieldTimes: { favorite: Date.now(), tagIds: Date.now() }, questions: [] }; store.quizzes.push(q); save(); qid = q.id; editorSnapshot = null; draft = null; impMsg = null; msg = ""; view = "edit"; render(); },
   edit(id) { qid = id; editorSnapshot = JSON.parse(JSON.stringify(getQ())); draft = null; impMsg = null; msg = ""; view = "edit"; render(); },
   delquiz(id) {
     const quiz = store.quizzes.find(item => item.id === id); if (!quiz) return;
@@ -885,44 +881,44 @@ const A = {
   }
 };
 
-document.getElementById("folder-name-form").addEventListener("submit", e => {
+document.getElementById("tag-edit-form").addEventListener("submit", e => {
   e.preventDefault();
-  const input = document.getElementById("folder-name-input");
-  const error = document.getElementById("folder-name-error");
-  const name = input.value.trim();
-  if (!name) { error.textContent = "Enter a folder name."; input.focus(); return; }
-  if (store.folders.some(folder => folder.id !== folderNameEditId && folder.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase())) { error.textContent = "A folder with that name already exists."; input.focus(); return; }
-  if (folderNameEditId) {
-    const folder = store.folders.find(item => item.id === folderNameEditId);
-    if (!folder) { document.getElementById("folder-name-dialog").close(); return; }
-    folder.name = name; folder.updatedAt = Date.now();
-  } else {
-    const folder = { id: uid(), name };
-    store.folders.push(folder); activeFolderId = folder.id; showAllQuizzes = false; showFavorites = false;
-  }
-  save();
-  document.getElementById("folder-name-dialog").close();
-  folderNameEditId = null;
-  render();
+  const nameInput = document.getElementById("tag-name-input"), error = document.getElementById("tag-name-error");
+  const name = nameInput.value.trim(), color = document.getElementById("tag-color-input").value;
+  if (!name) { error.textContent = "Enter a tag name."; nameInput.focus(); return; }
+  if (store.tags.some(tag => tag.id !== tagEditId && tag.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase())) { error.textContent = "A tag with that name already exists."; nameInput.focus(); return; }
+  const now = Date.now();
+  if (tagEditId) {
+    const tag = store.tags.find(item => item.id === tagEditId);
+    if (!tag) { document.getElementById("tag-edit-dialog").close(); return; }
+    tag.name = name; tag.color = color; tag.updatedAt = now;
+  } else store.tags.push({ id: uid(), name, color, updatedAt: now });
+  save(); document.getElementById("tag-edit-dialog").close(); render();
 });
-document.getElementById("folder-name-cancel").addEventListener("click", () => document.getElementById("folder-name-dialog").close());
-document.getElementById("folder-name-dialog").addEventListener("close", () => { folderNameEditId = null; });
-document.getElementById("folder-delete-confirm").addEventListener("click", () => {
-  const id = folderDeletePendingId;
-  const folder = store.folders.find(item => item.id === id);
-  if (!folder) { document.getElementById("folder-delete-dialog").close(); return; }
-  const deletedQuizIds = store.quizzes.filter(quiz => quiz.folderId === id).map(quiz => quiz.id);
-  store.quizzes = store.quizzes.filter(quiz => quiz.folderId !== id);
-  store.deletedQuizIds = [...new Set([...(store.deletedQuizIds || []), ...deletedQuizIds])];
-  store.folders = store.folders.filter(item => item.id !== id);
-  store.deletedFolderIds = [...new Set([...(store.deletedFolderIds || []), id])];
-  activeFolderId = null; showAllQuizzes = true; showFavorites = false; save();
-  document.getElementById("folder-delete-dialog").close();
-  folderDeletePendingId = null;
-  render();
+document.getElementById("tag-edit-cancel").addEventListener("click", () => document.getElementById("tag-edit-dialog").close());
+document.getElementById("tag-edit-dialog").addEventListener("close", () => { tagEditId = null; });
+document.getElementById("tag-delete-open").addEventListener("click", () => {
+  const tag = store.tags.find(item => item.id === tagEditId); if (!tag) return;
+  tagDeletePendingId = tag.id;
+  document.getElementById("tag-delete-title").textContent = `Delete “${tag.name}”?`;
+  document.getElementById("tag-delete-dialog").showModal();
 });
-document.getElementById("folder-delete-cancel").addEventListener("click", () => document.getElementById("folder-delete-dialog").close());
-document.getElementById("folder-delete-dialog").addEventListener("close", () => { folderDeletePendingId = null; });
+document.getElementById("tag-delete-confirm").addEventListener("click", () => {
+  const id = tagDeletePendingId;
+  if (!store.tags.some(tag => tag.id === id)) { document.getElementById("tag-delete-dialog").close(); return; }
+  store.tags = store.tags.filter(tag => tag.id !== id);
+  store.deletedTagIds = [...new Set([...(store.deletedTagIds || []), id])];
+  const now = Date.now();
+  store.quizzes.forEach(quiz => {
+    const next = (quiz.tagIds || []).filter(tagId => tagId !== id);
+    if (next.length !== (quiz.tagIds || []).length) { quiz.tagIds = next; quiz.updatedAt = now; quiz.fieldTimes = { ...(quiz.fieldTimes || {}), tagIds: now }; }
+  });
+  if (activeTagId === id) activeTagId = null;
+  save(); document.getElementById("tag-delete-dialog").close(); document.getElementById("tag-edit-dialog").close(); render();
+  tagDeletePendingId = null;
+});
+document.getElementById("tag-delete-cancel").addEventListener("click", () => document.getElementById("tag-delete-dialog").close());
+document.getElementById("tag-delete-dialog").addEventListener("close", () => { tagDeletePendingId = null; });
 document.getElementById("quiz-delete-confirm").addEventListener("click", () => {
   const id = quizDeletePendingId;
   if (!store.quizzes.some(quiz => quiz.id === id)) { document.getElementById("quiz-delete-dialog").close(); return; }
@@ -983,12 +979,6 @@ function onField(e) {
 }
 document.addEventListener("input", onField);
 document.addEventListener("change", e => {
-  if (e.target.matches("[data-quiz-folder]")) {
-    const quiz = store.quizzes.find(item => item.id === e.target.dataset.quizFolder);
-    const folderId = e.target.value || null;
-    if (quiz && (!folderId || store.folders.some(folder => folder.id === folderId))) { quiz.folderId = folderId; quiz.updatedAt = Date.now(); quiz.fieldTimes = { ...(quiz.fieldTimes || {}), folderId: quiz.updatedAt }; save(); if (view === "home") render(); }
-    return;
-  }
   if (e.target.id === "file") {   // load a text file into the import box
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();

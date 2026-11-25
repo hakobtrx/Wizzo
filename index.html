@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
 <div class="wrap">
@@ -32,30 +32,32 @@
   <div id="sync-feedback" class="sync-feedback" role="status" aria-live="polite"></div>
   <a class="sync-guide-link" href="SUPABASE_SETUP.md" target="_blank" rel="noopener">Setup instructions</a>
 </dialog>
-<dialog class="sync-dialog folder-name-dialog" id="folder-name-dialog" aria-labelledby="folder-name-title">
-  <form method="dialog" class="sync-dialog-close"><button aria-label="Close folder form">&times;</button></form>
-  <span class="eyebrow">LIBRARY</span>
-  <h2 id="folder-name-title">Create folder</h2>
-  <form id="folder-name-form" class="sync-form" novalidate>
-    <label for="folder-name-input">Folder name</label>
-    <input id="folder-name-input" type="text" maxlength="80" autocomplete="off" placeholder="e.g. Biology" required>
-    <div id="folder-name-error" class="sync-feedback is-error" role="alert" aria-live="polite"></div>
-    <div class="sync-actions"><button class="pri" type="submit">Save folder</button><button id="folder-name-cancel" type="button">Cancel</button></div>
+<dialog class="sync-dialog tag-edit-dialog" id="tag-edit-dialog" aria-labelledby="tag-edit-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close tag editor">&times;</button></form>
+  <span class="eyebrow">LIBRARY ORGANIZATION</span>
+  <h2 id="tag-edit-title">Create tag</h2>
+  <form id="tag-edit-form" class="sync-form" novalidate>
+    <label for="tag-name-input">Tag name</label>
+    <input id="tag-name-input" type="text" maxlength="40" autocomplete="off" placeholder="e.g. Programming" required>
+    <label for="tag-color-input">Tag color</label>
+    <input id="tag-color-input" class="tag-color-input" type="color" value="#aa9bff" aria-label="Tag color">
+    <div id="tag-name-error" class="sync-feedback is-error" role="alert" aria-live="polite"></div>
+    <div class="sync-actions"><button class="pri" type="submit">Save tag</button><button id="tag-delete-open" class="tag-delete-open" type="button" hidden>Delete tag</button><button id="tag-edit-cancel" type="button">Cancel</button></div>
   </form>
 </dialog>
-<dialog class="sync-dialog folder-delete-dialog" id="folder-delete-dialog" aria-labelledby="folder-delete-title">
-  <form method="dialog" class="sync-dialog-close"><button aria-label="Close delete confirmation">&times;</button></form>
-  <span class="eyebrow">FOLDER MANAGEMENT</span>
-  <h2 id="folder-delete-title">Delete folder?</h2>
-  <p class="mu" id="folder-delete-message">This will permanently delete the folder and all quizzes inside it. This action can’t be undone.</p>
-  <div class="sync-actions"><button class="folder-delete-confirm" id="folder-delete-confirm" type="button">Delete folder</button><button id="folder-delete-cancel" type="button">Cancel</button></div>
+<dialog class="sync-dialog confirm-delete-dialog" id="tag-delete-dialog" aria-labelledby="tag-delete-title">
+  <form method="dialog" class="sync-dialog-close"><button aria-label="Close tag deletion confirmation">&times;</button></form>
+  <span class="eyebrow">LIBRARY ORGANIZATION</span>
+  <h2 id="tag-delete-title">Delete tag?</h2>
+  <p class="mu" id="tag-delete-message">This removes the tag from quizzes. Your quizzes will stay in the library.</p>
+  <div class="sync-actions"><button class="destructive-confirm" id="tag-delete-confirm" type="button">Delete tag</button><button id="tag-delete-cancel" type="button">Cancel</button></div>
 </dialog>
-<dialog class="sync-dialog folder-delete-dialog" id="quiz-delete-dialog" aria-labelledby="quiz-delete-title">
+<dialog class="sync-dialog confirm-delete-dialog" id="quiz-delete-dialog" aria-labelledby="quiz-delete-title">
   <form method="dialog" class="sync-dialog-close"><button aria-label="Close delete confirmation">&times;</button></form>
   <span class="eyebrow">LIBRARY</span>
   <h2 id="quiz-delete-title">Delete quiz?</h2>
   <p class="mu" id="quiz-delete-message">This will permanently delete this quiz and all of its questions. This action can’t be undone.</p>
-  <div class="sync-actions"><button class="folder-delete-confirm" id="quiz-delete-confirm" type="button">Delete quiz</button><button id="quiz-delete-cancel" type="button">Cancel</button></div>
+  <div class="sync-actions"><button class="destructive-confirm" id="quiz-delete-confirm" type="button">Delete quiz</button><button id="quiz-delete-cancel" type="button">Cancel</button></div>
 </dialog>
 <dialog class="sync-dialog activity-clear-dialog" id="activity-clear-dialog" aria-labelledby="activity-clear-title">
   <form method="dialog" class="sync-dialog-close"><button aria-label="Close confirmation">&times;</button></form>
@@ -73,7 +75,7 @@
 </dialog>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="sync-config.js"></script>
-<script src="script.js?v=20"></script>
+<script src="script.js?v=22"></script>
 </body>
 </html>
 
