@@ -3,6 +3,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const shuf = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const TYPES = { mcq: "Multiple Choice", tf: "True or False", id: "Identification", multi: "Multiple Select" };
+const TIMER_CONFLICT_WARNING = "Choose either a whole-quiz timer or per-question timers, not both.";
 const icon = (name, size = 16) => {
   const paths = {
     spark: '<path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z"/>',
@@ -137,7 +138,7 @@ function mergeStores(local, remote) {
       const questions = new Map((current.questions || []).map(x => [x.id, x]));
       for (const question of (q.questions || [])) {
         if (!questions.has(question.id)) { current.questions.push(question); questions.set(question.id, question); }
-        else mergeFields(questions.get(question.id), question, ["type", "text", "explanation", "options", "correct", "answers"]);
+        else mergeFields(questions.get(question.id), question, ["type", "text", "explanation", "options", "correct", "answers", "timeLimit"]);
       }
     }
   }
@@ -342,7 +343,8 @@ function openSyncDialog() {
 
 /* ---------- App state ---------- */
 let store = load(),
-    view = "home",      // home | edit | quiz | result
+    view = "home",      // home | edit | preview | quiz | result
+    previewReturnView = "home",
     qid = null,         // id of the quiz being edited/taken
     draft = null,       // question currently being edited
     run = null,         // current quiz attempt
@@ -406,17 +408,18 @@ const right = q => q.type === "id" ? q.answers.join(" / ") : optText(q, q.correc
 
 /* ---------- Starting an attempt ---------- */
 function startRun(qz, pool, retry) {
-  stopQuizClock();
   let qs = pool.slice();
   if (qz.shuffle) qs = shuf(qs);
   const n = parseInt(qz.count);
   if (!retry && n > 0 && n < qs.length) qs = qs.slice(0, n);
+  if (Number(qz.timeLimit) > 0 && qs.some(question => Number(question.timeLimit) > 0)) { flashMessage(TIMER_CONFLICT_WARNING); return; }
+  stopQuizClock();
   run = {
     mode: retry ? "retry" : "full",
-    items: qs.map(q => {
+    items: qs.map((q, i) => {
       let o = (q.options || []).map((_, i) => i);
       if (qz.shuffle && q.type !== "tf") o = shuf(o);   // order = display order of option indexes
-      return { q, order: o, sel: [], text: "", done: false, ok: false };
+      return { q, order: o, sel: [], text: "", done: false, ok: false, deadline: i === 0 && Number(q.timeLimit) > 0 ? Date.now() + Number(q.timeLimit) * 1000 : null };
     }),
     i: 0, score: 0, deadline: Number(qz.timeLimit) > 0 ? Date.now() + Number(qz.timeLimit) * 60000 : null
   };
@@ -429,19 +432,33 @@ function stopQuizClock() {
 }
 function startQuizClock() {
   stopQuizClock();
-  if (view !== "quiz" || !run?.deadline) return;
+  if (view !== "quiz" || (!run?.deadline && !(run?.items[run.i]?.deadline && !run.items[run.i].done))) return;
   const tick = () => {
-    const seconds = Math.max(0, Math.ceil((run.deadline - Date.now()) / 1000));
-    const clock = document.getElementById("quiz-clock");
-    if (clock) { clock.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; clock.classList.toggle("is-urgent", seconds <= 60); }
-    if (seconds <= 0) {
-      stopQuizClock();
-      for (const item of run.items) if (!item.done) { item.done = true; item.ok = false; }
-      completeRun(true);
+    if (run.deadline) {
+      const seconds = Math.max(0, Math.ceil((run.deadline - Date.now()) / 1000));
+      const clock = document.getElementById("quiz-clock");
+      if (clock) { clock.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; clock.classList.toggle("is-urgent", seconds <= 60); }
+      if (seconds <= 0) {
+        stopQuizClock();
+        for (const item of run.items) if (!item.done) { item.done = true; item.ok = false; }
+        completeRun(true);
+        return;
+      }
+    }
+    const current = run.items[run.i];
+    if (current?.deadline && !current.done) {
+      const seconds = Math.max(0, Math.ceil((current.deadline - Date.now()) / 1000));
+      const clock = document.getElementById("question-clock");
+      if (clock) { clock.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; clock.classList.toggle("is-urgent", seconds <= 10); }
+      if (seconds <= 0) {
+        current.done = true; current.ok = false; current.timedOut = true;
+        stopQuizClock(); render();
+        return;
+      }
     }
   };
   tick();
-  if (view === "quiz") quizClockInterval = setInterval(tick, 1000);
+  if (view === "quiz" && (run.deadline || (run.items[run.i]?.deadline && !run.items[run.i].done))) quizClockInterval = setInterval(tick, 1000);
 }
 function completeRun(expired = false) {
   stopQuizClock();
@@ -510,14 +527,14 @@ function homeV() {
       <div class="library-card-top"><span class="library-icon">${icon("book", 17)}</span><span class="library-card-meta"><button class="quiz-favorite-button ${q.favorite ? "is-favorite" : ""}" type="button" data-act="toggle-favorite" data-id="${esc(q.id)}" aria-label="${q.favorite ? "Remove from favorites" : "Add to favorites"}: ${esc(q.title || "Untitled quiz")}" aria-pressed="${Boolean(q.favorite)}" title="${q.favorite ? "Remove from favorites" : "Add to favorites"}">${icon("star", 18)}</button><span class="pill">${q.questions.length} question${q.questions.length === 1 ? "" : "s"}</span></span></div>
       <h2 class="library-card-title">${esc(q.title || "Untitled quiz")}</h2><p class="mu library-card-description">${esc(q.description || "No description yet")}</p>
       ${(q.tagIds || []).length ? `<div class="quiz-tag-badges">${(q.tagIds || []).slice(0, 3).map(id => store.tags.find(tag => tag.id === id)).filter(Boolean).map(tagBadge).join("")}${q.tagIds.length > 3 ? `<span class="tag-overflow">+${q.tagIds.length - 3}</span>` : ""}</div>` : ""}
-      <div class="library-card-actions"><button class="pri" data-act="start" data-id="${q.id}" ${q.questions.length ? "" : "disabled"}>Take quiz</button><button data-act="edit" data-id="${q.id}">Edit quiz</button><button class="icon-button dng" title="Delete quiz" aria-label="Delete ${esc(q.title || "quiz")}" data-act="delquiz" data-id="${q.id}">${icon("trash")}</button></div>
+      <div class="library-card-actions"><button class="pri" data-act="start" data-id="${q.id}" ${q.questions.length ? "" : "disabled"}>Take quiz</button><button class="quiz-preview-button" data-act="preview-quiz" data-id="${q.id}" ${q.questions.length ? "" : "disabled"}>Preview</button><button class="icon-button edit-quiz" title="Edit quiz" aria-label="Edit ${esc(q.title || "quiz")}" data-act="edit" data-id="${q.id}">${icon("edit")}</button><button class="icon-button dng" title="Delete quiz" aria-label="Delete ${esc(q.title || "quiz")}" data-act="delquiz" data-id="${q.id}">${icon("trash")}</button></div>
       ${q.questions.length ? "" : '<div class="mu empty-hint">Add a question before taking this quiz.</div>'}
     </article>`).join("");
   const recent = attempts.slice(0, 4).map(x => `<div class="activity-row"><span class="activity-dot"></span><span><b>${esc(x.title)}</b><small>${new Date(x.at).toLocaleDateString()} · ${x.score}/${x.total} correct</small></span><strong>${x.percent}%</strong></div>`).join("");
   return `
-    <header class="app-header"><a class="app-brand" href="#" data-act="home"><span class="brand-mark">W</span></a><nav class="main-nav"><button class="active" data-act="home">Dashboard</button></nav><button class="mobile-menu-toggle" aria-expanded="false" aria-controls="mobile-nav" data-act="toggle-nav">Menu</button><nav class="mobile-nav" id="mobile-nav" hidden><button data-act="home">Dashboard</button><button data-act="newquiz">Create a quiz</button></nav><div class="header-actions"><button class="sync-open" type="button" data-act="sync">Sync</button><button class="icon-button theme-toggle" id="theme" aria-label="Toggle light or dark mode" title="Toggle theme">${icon("sun")}</button></div></header>
+    <header class="app-header"><a class="app-brand" href="#" data-act="home"><img class="brand-mark" src="assets/wizzo-mark.jpg" alt="ITskolar Hub"></a><nav class="main-nav"><button class="active" data-act="home">Dashboard</button></nav><button class="mobile-menu-toggle" aria-expanded="false" aria-controls="mobile-nav" data-act="toggle-nav">Menu</button><nav class="mobile-nav" id="mobile-nav" hidden><button data-act="home">Dashboard</button><button data-act="newquiz">Create a quiz</button></nav><div class="header-actions"><button class="sync-open" type="button" data-act="sync">Sync</button><button class="icon-button theme-toggle" id="theme" aria-label="Toggle light or dark mode" title="Toggle theme">${icon("sun")}</button></div></header>
     <main class="app-shell dashboard-shell">
-      <section class="welcome-block"><div><span class="eyebrow">YOUR LEARNING SPACE</span><h1>Wizzo</h1><p>Pick up where you left off or create something new.</p></div></section>
+      <section class="welcome-block"><div><span class="eyebrow">YOUR LEARNING SPACE</span><h1>ITskolar Hub</h1><p>Pick up where you left off or create something new.</p></div></section>
       ${msg && !cd ? `<div class="notice" role="status">${esc(msg)}</div>` : ""}
       <section class="overview-grid" aria-label="Quiz overview">
         <article class="overview-card"><span class="overview-label">LIBRARY</span><strong>${quizzes.length}</strong><span class="overview-foot">${quizzes.length === 1 ? "quiz" : "quizzes"} created</span></article>
@@ -549,7 +566,7 @@ function quizV() {
   const can = type === "id" ? it.text.trim() !== "" : it.sel.length > 0;
   const fb = it.done ? `
     <div class="fb ${it.ok ? "good" : "bad"}" role="status">
-      <div class="tag">${it.ok ? "Correct · well done" : "Not quite · review the correct answer"}</div>
+      <div class="tag">${it.timedOut ? "Time ran out for this question" : it.ok ? "Correct" : "Incorrect"}</div>
       ${it.ok ? "" : `<div>Correct answer: <b>${esc(right(q))}</b></div>`}
       <div style="margin-top:4px">${esc(q.explanation || "No explanation provided.")}</div>
     </div>` : "";
@@ -558,7 +575,7 @@ function quizV() {
     <div class="row sp">
       <div><h2>${esc(qz ? qz.title : "")}</h2><div class="mu">${esc(qz ? qz.description : "")}${run.mode === "retry" ? " (Retrying missed questions)" : ""}</div></div>
     </div>
-    <div class="quiz-status-row"><div class="quiz-progress-copy"><b>Question ${run.i + 1} of ${N}</b><span>Score: <b>${run.score}</b>/${N}</span></div>${run.deadline ? `<div class="quiz-timer"><span>Time remaining</span><b id="quiz-clock" aria-live="off"></b></div>` : ""}</div>
+    <div class="quiz-status-row"><div class="quiz-progress-copy"><b>Question ${run.i + 1} of ${N}</b><span>Score: <b>${run.score}</b>/${N}</span></div><div class="quiz-timers">${run.deadline ? `<div class="quiz-timer"><span>Quiz time left</span><b id="quiz-clock" aria-live="off"></b></div>` : ""}${it.deadline && !it.done ? `<div class="quiz-timer question-timer"><span>Question time</span><b id="question-clock" aria-live="off"></b></div>` : ""}</div></div>
     <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}"><i style="width:${pct}%"></i></div>
     <p class="q">${esc(q.text)}</p>
     <div class="mu">${type === "multi" ? "Select all that apply." : type === "id" ? "Type your answer." : "Select one answer."}</div>
@@ -587,6 +604,7 @@ function resultV() {
     </div>`).join("");
   return `
   <div class="card result-summary">
+    ${msg ? `<div class="notice" role="alert">${esc(msg)}</div>` : ""}
     <h1>${run.expired ? "Time is up" : "Quiz complete"}</h1><div class="mu">${esc(getQ()?.title || "")}</div>
     <div class="stats">
       <div class="stat"><b>${N}</b>Total questions</div>
@@ -606,6 +624,21 @@ function resultV() {
   <div class="card result-review"><h2>Answer review${flt ? " (mistakes only)" : ""}</h2><div class="result-review-list">${rv || '<div class="mu result-perfect">No mistakes to review. Perfect!</div>'}</div></div>`;
 }
 
+function previewQuizV() {
+  const qz = getQ();
+  const questions = qz?.questions || [];
+  const content = questions.map((q, i) => {
+    let answers = "";
+    if (q.type === "id") {
+      answers = `<div class="preview-answer preview-identification-answer" hidden><span class="mu">Accepted answer${(q.answers || []).length === 1 ? "" : "s"}</span><b>${(q.answers || []).map(esc).join(" · ") || "Not set"}</b></div>`;
+    } else {
+      answers = `<div class="preview-options">${(q.options || []).map((option, oi) => `<div class="preview-option ${q.correct?.includes(oi) ? "preview-correct-answer" : ""}"><span>${esc(option)}</span></div>`).join("")}</div>`;
+    }
+    return `<article class="card preview-question"><div class="preview-question-heading"><span class="builder-number">${i + 1}</span><span class="builder-kind">${esc(TYPES[q.type] || "Question")}</span></div><h2>${esc(q.text)}</h2>${answers}${q.explanation ? `<div class="preview-explanation" hidden><span class="mu">Explanation</span><p>${esc(q.explanation)}</p></div>` : ""}<button type="button" class="preview-answer-toggle" data-act="toggle-preview-answer" data-revealed="false" aria-expanded="false" aria-label="Show answer for question ${i + 1}">Show answer</button></article>`;
+  }).join("");
+  return `<div class="card preview-header"><div><span class="eyebrow">QUIZ PREVIEW</span><h1>${esc(qz?.title || "Untitled Quiz")}</h1>${qz?.description ? `<p>${esc(qz.description)}</p>` : ""}</div><button data-act="close-preview">Back</button></div>${content || '<div class="card builder-empty">This quiz has no questions yet.</div>'}`;
+}
+
 function editV() {
   const q = getQ();
   const ql = q.questions.map((x, i) => `
@@ -620,16 +653,15 @@ function editV() {
   <div class="builder-layout">
     <aside class="builder-sidebar">
       <div class="builder-welcome"><h2>Welcome to Content Builder</h2><p>Drag and drop content elements to create your content.</p></div>
-      <div class="builder-tools-section"><h3>Title ${icon("info", 13)}</h3><div class="builder-tile builder-start-tile"><span class="builder-tile-icon">${icon("book", 16)}</span><span>Quiz title</span></div></div>
+      <div class="builder-tools-section"><h3>Cover Page ${icon("info", 13)}</h3><div class="builder-tile builder-start-tile"><span class="builder-tile-icon">${icon("book", 16)}</span><span>Quiz title</span></div></div>
       <div class="builder-tools-section"><h3>Content Elements ${icon("info", 13)}</h3><div class="builder-tile-grid"><button class="builder-tile" data-act="addq"><span class="builder-tile-icon">${icon("text", 16)}</span><span>Text Questions</span></button><button class="builder-tile" data-act="addq"><span class="builder-tile-icon">${icon("image", 16)}</span><span>Image Questions</span></button><button class="builder-tile" data-act="addq"><span class="builder-tile-icon">${icon("form", 16)}</span><span>Form Fields</span></button><button class="builder-tile" data-act="addq"><span class="builder-tile-icon">A</span><span>Text</span></button><button class="builder-tile" data-act="addq"><span class="builder-tile-icon">${icon("image", 16)}</span><span>Image or Video</span></button></div></div>
       <div class="builder-tools-section"><h3>Results ${icon("info", 13)}</h3><div class="builder-tile-grid"><button class="builder-tile" data-act="show-import"><span class="builder-tile-icon lavender">${icon("file", 16)}</span><span>Results Builder</span></button><button class="builder-tile" data-act="show-import"><span class="builder-tile-icon lavender">${icon("link", 16)}</span><span>URL Redirect</span></button></div></div>
       <div class="builder-exit-actions"><button class="builder-done pri" data-act="done">Done</button><button class="builder-quit" data-act="quit-builder">Quit</button></div>
     </aside>
     <main class="builder-main">
-      <label class="builder-description-label" for="qd">Description</label><textarea class="builder-description" id="qd" data-qf="description" placeholder="Add a short description">${esc(q.description)}</textarea>
       <section class="quiz-tag-editor" aria-label="Quiz tags"><div class="quiz-tag-editor-heading"><b>Tags</b><button type="button" class="tag-manage-create" data-act="create-tag">+ Create Tag</button></div>${store.tags.length ? `<div class="quiz-tag-picker">${store.tags.map(tag => `<button type="button" class="tag-choice ${(q.tagIds || []).includes(tag.id) ? "selected" : ""}" data-act="toggle-quiz-tag" data-id="${esc(tag.id)}" style="--tag-color:${esc(tag.color)}" aria-pressed="${(q.tagIds || []).includes(tag.id)}">${esc(tag.name)}</button>`).join("")}</div>` : '<p class="tag-picker-empty">No tags yet. Create one to organize this quiz.</p>'}</section>
-      <section class="builder-stage start-stage"><h2>Title</h2><div class="builder-start-card"><span class="builder-row-grip">${icon("book", 16)}</span><input class="builder-title builder-start-title" aria-label="Quiz title" id="qt" data-qf="title" value="${esc(q.title)}" placeholder="Untitled Quiz"></div></section>
-      <section class="builder-stage content-stage"><div class="builder-stage-heading"><h2>Content Elements</h2><div class="builder-settings-inline"><div class="builder-setting-control"><label for="qc">Questions per attempt</label><input type="number" id="qc" min="1" max="${Math.max(1, q.questions.length)}" data-qf="count" value="${esc(q.count)}" placeholder="All"></div><div class="builder-setting-control"><label for="qtime">Timer</label><select id="qtime" data-qf="timeLimit"><option value="0" ${Number(q.timeLimit) ? "" : "selected"}>No timer</option>${[5,10,15,20,30,45,60,90,120].map(m => `<option value="${m}" ${Number(q.timeLimit) === m ? "selected" : ""}>${m} minutes</option>`).join("")}</select></div></div></div>
+      <section class="builder-stage start-stage"><h2>Cover Page</h2><div class="builder-start-card"><span class="builder-row-grip">${icon("book", 16)}</span><input class="builder-title builder-start-title" aria-label="Quiz title" id="qt" data-qf="title" value="${esc(q.title)}" placeholder="Untitled Quiz"></div><div class="builder-description-editor"><label for="qd">Description</label><textarea class="builder-description" id="qd" data-qf="description" placeholder="Add a short description">${esc(q.description)}</textarea></div></section>
+      <section class="builder-stage content-stage"><div class="builder-stage-heading"><h2>Content Elements</h2><div class="builder-settings-inline"><div class="builder-setting-control"><label for="qc">Questions per attempt</label><input type="number" id="qc" min="1" max="${Math.max(1, q.questions.length)}" data-qf="count" value="${esc(q.count)}" placeholder="All"></div><div class="builder-setting-control"><label for="qtime">Whole quiz timer</label><select id="qtime" data-qf="timeLimit"><option value="0" ${Number(q.timeLimit) ? "" : "selected"}>No timer</option>${[5,10,15,20,30,45,60,90,120].map(m => `<option value="${m}" ${Number(q.timeLimit) === m ? "selected" : ""}>${m} minutes</option>`).join("")}</select></div></div></div>
         <label class="builder-shuffle"><input type="checkbox" data-qf="shuffle" ${q.shuffle ? "checked" : ""}> Randomize questions and answer choices</label>
         ${draft ? draftV() : ""}${ql || (draft ? "" : '<div class="builder-empty">Add your first question using the content tools.</div>')}
         ${draft ? "" : '<button class="builder-add-question" data-act="addq">+ Add question</button>'}
@@ -669,11 +701,12 @@ function draftV() {
   const d = draft; let f = "";
   if (d.type === "mcq" || d.type === "multi") {
     const m = d.type === "multi";
-    f = [0,1,2,3].map(i => `
+    f = d.options.map((option, i) => `
       <div class="orow">
-        <input type="${m ? "checkbox" : "radio"}" name="cor" data-df="correct" data-i="${i}" aria-label="Option ${"ABCD"[i]} is correct" ${d.correct.includes(i) ? "checked" : ""}><span class="answer-marker">${m ? "Correct" : "Set as correct"}</span>
-        <input type="text" data-df="opt" data-i="${i}" placeholder="Option ${"ABCD"[i]}" value="${esc(d.options[i])}">
-      </div>`).join("") + `<div class="mu" style="margin-top:6px">${m ? "Tick every correct option (at least two)." : "Select the correct option."}</div>`;
+        <input type="${m ? "checkbox" : "radio"}" name="cor" data-df="correct" data-i="${i}" aria-label="Option ${i + 1} is correct" ${d.correct.includes(i) ? "checked" : ""}><span class="answer-marker">${m ? "Correct" : "Set as correct"}</span>
+        <input type="text" data-df="opt" data-i="${i}" placeholder="Option ${i + 1}" value="${esc(option)}">
+        ${d.options.length > 2 ? `<button type="button" class="choice-remove" data-act="remove-option" data-i="${i}" aria-label="Remove option ${i + 1}" title="Remove choice">${icon("close", 14)}</button>` : ""}
+      </div>`).join("") + `<div class="choice-controls"><div class="mu">${m ? "Tick every correct option (at least two)." : "Select the correct option."}</div>${d.options.length < 12 ? '<button type="button" class="choice-add" data-act="add-option">+ Add choice</button>' : '<span class="choice-limit">Maximum 12 choices</span>'}</div>`;
   } else if (d.type === "tf") {
     f = ["True","False"].map((t, i) => `
       <div class="orow"><input type="radio" name="cor" data-df="correct" data-i="${i}" ${d.correct.includes(i) ? "checked" : ""} id="tf${i}"><label for="tf${i}" style="margin:0;font-weight:400">${t}</label></div>`).join("");
@@ -686,6 +719,7 @@ function draftV() {
     <div class="question-editor-scroll">
     <label for="dt">Question type</label>
     <select id="dt" data-df="type">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}" ${d.type === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+    <label for="question-time-limit">Question timer</label><select id="question-time-limit" data-df="timeLimit"><option value="0" ${Number(d.timeLimit) ? "" : "selected"}>No limit</option>${[[10,"10 seconds"],[15,"15 seconds"],[20,"20 seconds"],[30,"30 seconds"],[45,"45 seconds"],[60,"1 minute"],[90,"1 minute 30 seconds"],[120,"2 minutes"],[180,"3 minutes"],[300,"5 minutes"]].map(([seconds,label]) => `<option value="${seconds}" ${Number(d.timeLimit) === seconds ? "selected" : ""}>${label}</option>`).join("")}</select>
     <label for="dx">Question *</label><textarea id="dx" data-df="text">${esc(d.text)}</textarea>
     ${d.type === "id" ? "" : "<label>Answer choices</label>"}${f}
     <label for="de">Explanation</label><textarea id="de" data-df="explanation">${esc(d.explanation)}</textarea>
@@ -700,7 +734,7 @@ function render() {
   const resetScroll = a.dataset.view !== view;
   const previousScrollY = window.scrollY;
   const importWasOpen = Boolean(a.querySelector(".builder-import")?.open);
-  a.innerHTML = view === "home" ? homeV() : view === "edit" ? editV() : view === "quiz" ? quizV() : resultV();
+  a.innerHTML = view === "home" ? homeV() : view === "edit" ? editV() : view === "preview" ? previewQuizV() : view === "quiz" ? quizV() : resultV();
   a.dataset.view = view;
   const importPanel = a.querySelector(".builder-import");
   if (importPanel && importWasOpen) importPanel.open = true;
@@ -710,7 +744,7 @@ function render() {
   } else if (!theme) {
     const header = document.createElement("header");
     header.className = "app-header quiz-header";
-    header.innerHTML = `<a class="app-brand" href="#" data-act="home"><span class="brand-mark">W</span></a><span class="header-spacer"></span><div class="header-actions"><button class="sync-open" type="button" data-act="sync">Sync</button><button class="icon-button theme-toggle" id="theme" aria-label="Toggle light or dark mode" title="Toggle theme">${icon("sun")}</button></div>`;
+    header.innerHTML = `<a class="app-brand" href="#" data-act="home"><img class="brand-mark" src="assets/wizzo-mark.jpg" alt="ITskolar Hub"></a><span class="header-spacer"></span><div class="header-actions"><button class="sync-open" type="button" data-act="sync">Sync</button><button class="icon-button theme-toggle" id="theme" aria-label="Toggle light or dark mode" title="Toggle theme">${icon("sun")}</button></div>`;
     a.prepend(header);
     theme = header.querySelector("#theme");
   }
@@ -720,6 +754,33 @@ function render() {
   };
   if (view === "quiz") startQuizClock(); else stopQuizClock();
   window.scrollTo(0, resetScroll ? 0 : previousScrollY);
+  saveAppSessionState();
+}
+
+const APP_SESSION_KEY = "itskolarHub.session";
+function saveAppSessionState() {
+  try {
+    sessionStorage.setItem(APP_SESSION_KEY, JSON.stringify({
+      view, previewReturnView, qid, run, draft, flt, msg,
+      showFavorites, activeTagId, librarySearch, libraryView, scrollY: window.scrollY
+    }));
+  } catch (error) {}
+}
+function restoreAppSessionState() {
+  try {
+    const state = JSON.parse(sessionStorage.getItem(APP_SESSION_KEY) || "null");
+    if (!state || !["home", "edit", "preview", "quiz", "result"].includes(state.view)) return 0;
+    if (state.qid && !store.quizzes.some(quiz => quiz.id === state.qid)) return 0;
+    if (["edit", "preview", "quiz", "result"].includes(state.view) && !state.qid) return 0;
+    if (["quiz", "result"].includes(state.view) && !state.run?.items?.length) return 0;
+    view = state.view; previewReturnView = state.previewReturnView === "edit" ? "edit" : "home";
+    qid = state.qid || null; run = state.run || null; draft = state.draft || null;
+    flt = Boolean(state.flt); msg = state.msg || "";
+    showFavorites = Boolean(state.showFavorites); activeTagId = state.activeTagId || null;
+    librarySearch = state.librarySearch || ""; libraryView = state.libraryView === "list" ? "list" : "grid";
+    if (view === "edit" || (view === "preview" && previewReturnView === "edit")) editorSnapshot = JSON.parse(JSON.stringify(getQ()));
+    return Math.max(0, Number(state.scrollY) || 0);
+  } catch (error) { return 0; }
 }
 
 document.getElementById("sync-login-form").addEventListener("submit", async e => {
@@ -764,6 +825,9 @@ const A = {
   },
   "clear-activity"() { if ((store.activity || []).length) document.getElementById("activity-clear-dialog").showModal(); },
   "library-view"(el) { libraryView = el.dataset.layout === "list" ? "list" : "grid"; try { localStorage.setItem("quizmaker.libraryView", libraryView); } catch (e) {} render(); },
+  "preview-quiz"(id) { qid = id; const q = getQ(); if (!q.questions.length) { msg = "Add a question before previewing this quiz."; render(); return; } msg = ""; previewReturnView = "home"; view = "preview"; render(); },
+  "close-preview"() { view = previewReturnView; render(); },
+  "toggle-preview-answer"(el) { const card = el.closest(".preview-question"); if (!card) return; const show = el.dataset.revealed !== "true"; el.dataset.revealed = String(show); el.setAttribute("aria-expanded", String(show)); el.textContent = show ? "Hide answer" : "Show answer"; card.querySelectorAll(".preview-option").forEach(option => option.classList.toggle("is-correct", show && option.classList.contains("preview-correct-answer"))); const identificationAnswer = card.querySelector(".preview-identification-answer"); if (identificationAnswer) identificationAnswer.hidden = !show; const explanation = card.querySelector(".preview-explanation"); if (explanation) explanation.hidden = !show; },
   newquiz() { showFavorites = false; activeTagId = null; const q = { id: uid(), title: "", description: "", shuffle: true, count: "", timeLimit: 0, favorite: false, tagIds: [], fieldTimes: { favorite: Date.now(), tagIds: Date.now() }, questions: [] }; store.quizzes.push(q); save(); qid = q.id; editorSnapshot = null; draft = null; impMsg = null; msg = ""; view = "edit"; render(); },
   edit(id) { qid = id; editorSnapshot = JSON.parse(JSON.stringify(getQ())); draft = null; impMsg = null; msg = ""; view = "edit"; render(); },
   delquiz(id) {
@@ -793,6 +857,7 @@ const A = {
 
   pick(el) {
     const it = run.items[run.i]; if (it.done) return;
+    if (it.deadline && Date.now() >= it.deadline) { it.done = true; it.ok = false; it.timedOut = true; render(); return; }
     const oi = +el.dataset.oi;
     if (it.q.type === "multi") it.sel = it.sel.includes(oi) ? it.sel.filter(x => x !== oi) : [...it.sel, oi];
     else it.sel = [oi];
@@ -800,6 +865,7 @@ const A = {
   },
   submit() {
     const it = run.items[run.i]; if (it.done) return;
+    if (it.deadline && Date.now() >= it.deadline) { it.done = true; it.ok = false; it.timedOut = true; render(); return; }
     if (it.q.type === "id" && !it.text.trim()) return;
     if (it.q.type !== "id" && !it.sel.length) return;
     it.done = true; it.ok = grade(it); if (it.ok) run.score++;
@@ -807,21 +873,29 @@ const A = {
   },
   next() {
     if (!run.items[run.i].done) return;
-    if (run.i < run.items.length - 1) { run.i++; render(); }
+    if (run.i < run.items.length - 1) { run.i++; const next = run.items[run.i]; if (Number(next.q.timeLimit) > 0) next.deadline = Date.now() + Number(next.q.timeLimit) * 1000; render(); }
     else completeRun();
   },
   restart() { const q = getQ(); if (q) startRun(q, q.questions, false); },
   retry() { const q = getQ(); const miss = run.items.filter(x => !x.ok).map(x => x.q); if (q && miss.length) startRun(q, miss, true); },
   flt() { flt = !flt; render(); },
 
-  addq() { draft = { type: "mcq", text: "", options: ["","","",""], correct: [], answers: "", explanation: "", err: "" }; render(); },
+  addq() { draft = { type: "mcq", text: "", options: ["","","",""], correct: [], answers: "", explanation: "", timeLimit: 0, err: "" }; render(); },
+  "add-option"() { if (!draft || !["mcq", "multi"].includes(draft.type) || draft.options.length >= 12) return; draft.options.push(""); render(); },
+  "remove-option"(el) {
+    if (!draft || !["mcq", "multi"].includes(draft.type) || draft.options.length <= 2) return;
+    const removed = Number(el.dataset.i);
+    draft.options.splice(removed, 1);
+    draft.correct = draft.correct.filter(index => index !== removed).map(index => index > removed ? index - 1 : index);
+    draft.err = ""; render();
+  },
   "show-import"() { document.querySelector(".builder-import")?.scrollIntoView({ behavior: "smooth", block: "start" }); },
   "edit-settings"() { document.getElementById("qt")?.focus(); },
   "toggle-nav"(el) { const nav = document.getElementById(el.getAttribute("aria-controls")); if (!nav) return; const open = el.getAttribute("aria-expanded") !== "true"; el.setAttribute("aria-expanded", String(open)); nav.hidden = !open; },
-  preview() { const q = getQ(); if (!q.title.trim()) { msg = "Add a quiz title before previewing."; render(); return; } if (!q.questions.length) { msg = "Add at least one question before previewing."; render(); return; } startRun(q, q.questions, false); },
+  preview() { const q = getQ(); if (!q.title.trim()) { msg = "Add a quiz title before previewing."; render(); return; } if (!q.questions.length) { msg = "Add at least one question before previewing."; render(); return; } msg = ""; previewReturnView = "edit"; view = "preview"; render(); },
   editq(id) {
     const x = getQ().questions.find(q => q.id === id);
-    draft = { id, type: x.type, text: x.text, options: (x.type === "mcq" || x.type === "multi") ? x.options.slice() : ["","","",""], correct: (x.correct || []).slice(), answers: (x.answers || []).join(" | "), explanation: x.explanation || "", err: "" };
+    draft = { id, type: x.type, text: x.text, options: (x.type === "mcq" || x.type === "multi") ? (x.options || ["","","",""]).slice() : ["","","",""], correct: (x.correct || []).slice(), answers: (x.answers || []).join(" | "), explanation: x.explanation || "", timeLimit: Number(x.timeLimit) || 0, err: "" };
     render();
   },
   cancelq() { draft = null; render(); },
@@ -830,15 +904,16 @@ const A = {
     const d = draft, q = getQ(); let e = ""; const o = d.options.map(s => s.trim());
     if (!d.text.trim()) e = "Please enter the question text.";
     else if (d.type === "mcq" || d.type === "multi") {
-      if (o.some(s => !s)) e = "All four answer choices must be filled in.";
-      else if (new Set(o.map(s => s.toLowerCase())).size < 4) e = "Answer choices must be different from each other.";
+      if (o.length < 2) e = "Add at least two answer choices.";
+      else if (o.some(s => !s)) e = "All answer choices must be filled in.";
+      else if (new Set(o.map(s => s.toLowerCase())).size < o.length) e = "Answer choices must be different from each other.";
       else if (d.type === "mcq" && d.correct.length !== 1) e = "Select exactly one correct answer.";
       else if (d.type === "multi" && d.correct.length < 2) e = "Select at least two correct answers for a multiple select question.";
     }
     else if (d.type === "tf") { if (d.correct.length !== 1) e = "Select True or False as the correct answer."; }
     else if (!d.answers.split("|").some(s => s.trim())) e = "Enter at least one accepted answer.";
     if (e) { d.err = e; render(); return; }
-    const n = { id: d.id || uid(), type: d.type, text: d.text.trim(), explanation: d.explanation.trim() };
+    const n = { id: d.id || uid(), type: d.type, text: d.text.trim(), explanation: d.explanation.trim(), timeLimit: Number(d.timeLimit) || 0 };
     if (d.type === "mcq" || d.type === "multi") { n.options = o; n.correct = d.correct.slice().sort(); }
     else if (d.type === "tf") { n.options = ["True","False"]; n.correct = d.correct.slice(); }
     else n.answers = d.answers.split("|").map(s => s.trim()).filter(Boolean);
@@ -846,7 +921,7 @@ const A = {
     const now = Date.now();
     if (i >= 0) {
       const previous = q.questions[i];
-      const fields = ["type", "text", "explanation", "options", "correct", "answers"];
+      const fields = ["type", "text", "explanation", "options", "correct", "answers", "timeLimit"];
       const baseline = previous.updatedAt || 0;
       n.fieldTimes = previous.fieldTimes ? { ...previous.fieldTimes } : Object.fromEntries(fields.map(field => [field, baseline]));
       for (const field of fields) {
@@ -856,7 +931,7 @@ const A = {
       q.questions[i] = n;
     } else {
       n.updatedAt = now;
-      n.fieldTimes = Object.fromEntries(["type", "text", "explanation", "options", "correct", "answers"].map(field => [field, now]));
+      n.fieldTimes = Object.fromEntries(["type", "text", "explanation", "options", "correct", "answers", "timeLimit"].map(field => [field, now]));
       q.questions.push(n);
     }
     draft = null; save(); render();
@@ -961,11 +1036,16 @@ function onField(e) {
     return;
   }
   // Quiz settings (autosaved)
-  if (t.dataset.qf) { const q = getQ(), k = t.dataset.qf; q[k] = k === "shuffle" ? t.checked : t.value; q.updatedAt = Date.now(); const fields = ["title", "description", "shuffle", "count", "timeLimit"]; const baseline = store.updatedAt || 0; q.fieldTimes = { ...Object.fromEntries(fields.map(field => [field, baseline])), ...(q.fieldTimes || {}), [k]: q.updatedAt }; save(); const title = document.querySelector(".builder-title"); if (title && k === "title") title.setAttribute("aria-label", q.title ? `Quiz title: ${q.title}` : "Quiz title"); return; }
+  if (t.dataset.qf) {
+    const q = getQ(), k = t.dataset.qf;
+    if (k === "timeLimit" && Number(t.value) > 0 && (q.questions.some(question => Number(question.timeLimit) > 0) || (draft && Number(draft.timeLimit) > 0))) { flashMessage(TIMER_CONFLICT_WARNING); return; }
+    q[k] = k === "shuffle" ? t.checked : t.value; q.updatedAt = Date.now(); const fields = ["title", "description", "shuffle", "count", "timeLimit"]; const baseline = store.updatedAt || 0; q.fieldTimes = { ...Object.fromEntries(fields.map(field => [field, baseline])), ...(q.fieldTimes || {}), [k]: q.updatedAt }; save(); const title = document.querySelector(".builder-title"); if (title && k === "title") title.setAttribute("aria-label", q.title ? `Quiz title: ${q.title}` : "Quiz title"); return;
+  }
   // Question editor fields
   if (t.dataset.df && draft) {
     const k = t.dataset.df;
     if (k === "type") { draft.type = t.value; draft.correct = []; draft.err = ""; render(); return; }
+    if (k === "timeLimit" && Number(t.value) > 0 && Number(getQ()?.timeLimit) > 0) { flashMessage(TIMER_CONFLICT_WARNING); return; }
     if (k === "opt") draft.options[+t.dataset.i] = t.value;
     else if (k === "correct") draft.correct = [...document.querySelectorAll('[data-df="correct"]:checked')].map(x => +x.dataset.i);
     else draft[k] = t.value;
@@ -1002,5 +1082,17 @@ document.addEventListener("keydown", e => {   // Enter submits; Shift+Enter inse
   }
 });
 
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+const restoredScrollY = restoreAppSessionState();
 render();
+window.scrollTo(0, restoredScrollY);
+saveAppSessionState();
+let sessionScrollTimer = null;
+window.addEventListener("scroll", () => {
+  clearTimeout(sessionScrollTimer);
+  sessionScrollTimer = setTimeout(saveAppSessionState, 120);
+}, { passive: true });
+window.addEventListener("pagehide", saveAppSessionState);
+document.addEventListener("input", saveAppSessionState);
+document.addEventListener("change", saveAppSessionState);
 initializeCloudSync();
